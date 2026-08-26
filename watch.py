@@ -222,7 +222,7 @@ def sweep(state: dict, scan_dates: bool, only_dates: list[str] | None) -> None:
         save_state(state)
 today = datetime.now(TZ).date()
 cutoff_date = today + timedelta(days=13)
-    watch = [
+watch = [
         (date, sid, iso)
         for date, info in sorted(state["dates"].items())
         if today.isoformat() <= date <= cutoff_date.isoformat()
