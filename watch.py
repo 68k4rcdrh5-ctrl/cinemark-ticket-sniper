@@ -220,12 +220,10 @@ def sweep(state: dict, scan_dates: bool, only_dates: list[str] | None) -> None:
         log(f"date scan: tracking "
             f"{sum(1 for d in state['dates'].values() if d['showtimes'])} dates")
         save_state(state)
-today = datetime.now(TZ).date()
-cutoff_date = today + timedelta(days=13)
-
+      
     today = datetime.now(TZ).date()
     cutoff_date = today + timedelta(days=13)
-
+  
     watch = [
         (date, sid, iso)
         for date, info in sorted(state["dates"].items())
