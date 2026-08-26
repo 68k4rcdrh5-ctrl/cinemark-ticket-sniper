@@ -222,13 +222,18 @@ def sweep(state: dict, scan_dates: bool, only_dates: list[str] | None) -> None:
         save_state(state)
 today = datetime.now(TZ).date()
 cutoff_date = today + timedelta(days=13)
-watch = [
+
+    today = datetime.now(TZ).date()
+    cutoff_date = today + timedelta(days=13)
+
+    watch = [
         (date, sid, iso)
         for date, info in sorted(state["dates"].items())
         if today.isoformat() <= date <= cutoff_date.isoformat()
         for sid, iso in sorted(info["showtimes"].items(), key=lambda kv: kv[1])
         if qualifying(iso) and (not only_dates or date in only_dates)
     ]
+
     total = 0
     for i, (date, sid, iso) in enumerate(watch):
         try:
