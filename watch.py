@@ -30,7 +30,7 @@ import tomllib
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -199,6 +199,9 @@ def sweep(state: dict, scan_dates: bool, only_dates: list[str] | None) -> None:
 
     if scan_dates or first_run or only_dates or "theater_id" not in state:
         strip = only_dates or DATE_VALUE.findall(fetch(f"{BASE}/theatres/{THEATER}"))
+        today = datetime.now(TZ).date().isoformat()
+        cutoff = (datetime.now(TZ).date() + timedelta(days=13)).isoformat()
+        strip = [d for d in strip if today <= d <= cutoff]
         for date in sorted(set(strip)):
             if state["dates"].get(date, {}).get("showtimes"):
                 continue  # already tracking; showtime ids are stable
@@ -217,10 +220,12 @@ def sweep(state: dict, scan_dates: bool, only_dates: list[str] | None) -> None:
         log(f"date scan: tracking "
             f"{sum(1 for d in state['dates'].values() if d['showtimes'])} dates")
         save_state(state)
-
+today = datetime.now(TZ).date()
+cutoff_date = today + timedelta(days=13)
     watch = [
         (date, sid, iso)
         for date, info in sorted(state["dates"].items())
+        if today.isoformat() <= date <= cutoff_date.isoformat()
         for sid, iso in sorted(info["showtimes"].items(), key=lambda kv: kv[1])
         if qualifying(iso) and (not only_dates or date in only_dates)
     ]
