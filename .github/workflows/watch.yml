@@ -1,12 +1,19 @@
 name: watch
+
 on:
   schedule:
-    # Offset from :00/:30 on purpose: GitHub sheds scheduled runs at peak minutes.
+    # Run twice per hour, offset from :00/:30 to reduce GitHub scheduling delays.
     - cron: "13,43 * * * *"
+
   workflow_dispatch:
     inputs:
       test_alert:
-        description: "Fire a test alert instead of sweeping (verifies the email channel)"
+        description: "Fire a test alert instead of sweeping"
+        type: boolean
+        default: false
+
+      showtimes:
+        description: "Fetch fresh Showtime IDs from Seven Bridges for the next 14 days"
         type: boolean
         default: false
 
@@ -22,27 +29,36 @@ jobs:
   sweep:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+
     env:
       GH_TOKEN: ${{ github.token }}
+
     steps:
       - uses: actions/checkout@v4
 
       - name: Test alert
-        if: inputs.test_alert
+        if: ${{ inputs.test_alert }}
         run: >-
-          ./notify-hook "Test alert"
-          "The email channel works. A real alert reads 'Seats open 2026-08-08
-          7:00pm, F11-F12'. You can close this issue."
+          ./notify-hook
+          "Test alert"
+          "The email channel works."
+
+      - name: Show fresh Showtime IDs
+        if: ${{ inputs.showtimes && !inputs.test_alert }}
+        run: python3 watch.py --showtimes
 
       - name: Run sweep
-        if: ${{ !inputs.test_alert }}
+        if: ${{ !inputs.test_alert && !inputs.showtimes }}
         run: python3 watch.py --once
 
       - name: Persist state
+        if: ${{ !inputs.showtimes }}
         run: |
           git config user.name "odyssey-watcher[bot]"
           git config user.email "actions@users.noreply.github.com"
+
           git add state.json alerts.log 2>/dev/null || true
+
           if ! git diff --cached --quiet; then
             git commit -m "state: sweep $(date -u '+%Y-%m-%d %H:%M UTC')"
             git pull --rebase --autostash origin main || true
