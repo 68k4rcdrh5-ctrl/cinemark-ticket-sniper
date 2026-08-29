@@ -2,8 +2,8 @@ name: watch
 
 on:
   schedule:
-    # Run twice per hour, offset from :00/:30 to reduce GitHub scheduling delays.
-    - cron: "13,43 * * * *"
+    # Run every 10 minutes.
+    - cron: "3,13,23,33,43,53 * * * *"
 
   workflow_dispatch:
     inputs:
