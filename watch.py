@@ -620,13 +620,13 @@ def sweep(
                     ),
                 )
 
-        log(
-            "date scan: tracking "
-            f"{sum("
-            "1 for d in state['dates'].values() "
-            "if d['showtimes']"
-            ")} dates"
+        tracked_dates = sum(
+            1
+            for d in state["dates"].values()
+            if d["showtimes"]
         )
+
+        log(f"date scan: tracking {tracked_dates} dates")
 
         save_state(state)
 
