@@ -41,9 +41,6 @@ PARTY_SIZE = int(FILTERS.get("party_size", 1))
 # Seat-map requests are the expensive/rate-limited requests.
 REQUEST_GAP = float(PACING.get("request_gap_seconds", 8))
 
-# Polling interval.
-POLL_MINUTES = float(PACING.get("poll_minutes", 10))
-
 BASE = "https://www.cinemark.com"
 
 UA = (
@@ -751,12 +748,6 @@ def main() -> None:
     ap = argparse.ArgumentParser()
 
     ap.add_argument(
-        "--once",
-        action="store_true",
-        help="single sweep, then exit",
-    )
-
-    ap.add_argument(
         "--dates",
         nargs="*",
         help=(
@@ -774,16 +765,6 @@ def main() -> None:
         ),
     )
 
-    ap.add_argument(
-        "--showtimes",
-        action="store_true",
-        help=(
-            "fetch and print fresh "
-            "Showtime IDs for the "
-            "next 14 days"
-        ),
-    )
-
     args = ap.parse_args()
 
     if args.report:
@@ -792,39 +773,27 @@ def main() -> None:
         )
         return
 
-    if args.showtimes:
-        showtimes_diagnostic()
-        return
+    state = load_state()
 
-    while True:
-
-        state = load_state()
-
-        try:
-            sweep(
-                state,
-                only_dates=args.dates,
-            )
-
-        except Exception as e:
-            log(
-                f"ERROR during sweep: "
-                f"{e!r}"
-            )
-
-        state["cycle"] = (
-            state.get("cycle", 0)
-            + 1
+    try:
+        sweep(
+            state,
+            force_refresh=False,
+            only_dates=args.dates,
         )
 
-        save_state(state)
-
-        if args.once:
-            return
-
-        time.sleep(
-            POLL_MINUTES * 60
+    except Exception as e:
+        log(
+            f"ERROR during sweep: "
+            f"{e!r}"
         )
+
+    state["cycle"] = (
+        state.get("cycle", 0)
+        + 1
+    )
+
+    save_state(state)
 
 
 if __name__ == "__main__":
