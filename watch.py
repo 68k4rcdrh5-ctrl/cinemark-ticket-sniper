@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Watch Cinemark Seven Bridges for seat openings."""
+
 from __future__ import annotations
+
 import argparse
 import gzip
 import json
@@ -16,38 +18,52 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
 HERE = Path(__file__).parent
 STATE_FILE = HERE / "state.json"
 ALERT_LOG = HERE / "alerts.log"
+
 _cfg = tomllib.loads((HERE / "config.toml").read_text())
 TARGET = _cfg["target"]
 FILTERS = _cfg["filters"]
 PACING = _cfg.get("pacing", {})
+
 THEATER = TARGET["theater"]
 MOVIE_ID = str(TARGET["movie_id"])
 MOVIE_NAME = TARGET.get("movie_name", f"movie {MOVIE_ID}")
 TZ = ZoneInfo(TARGET.get("timezone", "UTC"))
+
 EXCLUDED_ROWS = set(FILTERS.get("excluded_rows", []))
 EARLIEST = FILTERS.get("earliest_showtime", "00:00")
 LATEST = FILTERS.get("latest_showtime", "23:59")
 PARTY_SIZE = int(FILTERS.get("party_size", 1))
+
 # Seat-map requests are the expensive/rate-limited requests.
 REQUEST_GAP = float(PACING.get("request_gap_seconds", 8))
+
 # Discovery requests can be considerably faster.
 DISCOVERY_GAP = float(PACING.get("discovery_gap_seconds", 1.0))
-# Refresh Cinemark dates/showtime IDs every N polling cycles.
-DATE_SCAN_EVERY = int(PACING.get("date_scan_every", 3))
-POLL_MINUTES = float(PACING.get("poll_minutes", 5))
+
+# Polling interval.
+POLL_MINUTES = float(PACING.get("poll_minutes", 10))
+
+# Showtime/date discovery is intentionally performed only once per day.
+SHOWTIME_REFRESH_HOURS = 24
+
 BASE = "https://www.cinemark.com"
+
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/126.0.0.0 Safari/537.36"
 )
+
 BACKOFF_SCHEDULE = [120, 300, 900]
+
 DATE_VALUE = re.compile(
     r'data-datevalue="(\d{4}-\d{2}-\d{2})"'
 )
+
 SHOWTIME_LINK = re.compile(
     r'/TicketSeatMap/\?TheaterId=(\d+)'
     r'&(?:amp;)?ShowtimeId=(\d+)'
@@ -55,27 +71,37 @@ SHOWTIME_LINK = re.compile(
     + re.escape(MOVIE_ID)
     + r'&(?:amp;)?Showtime=([\d\-T:]+)'
 )
+
 AVAILABLE_SEAT = re.compile(
     r'<button[^>]*class="seatAvailable seatBlock"[^>]*'
     r'info="([A-Z]+),(\d+),\d+,(\d+),'
 )
+
+
 @dataclass
 class Seat:
     row: str
     number: int
     col: int
+
     @property
     def label(self) -> str:
         return f"{self.row}{self.number}"
+
+
 def log(msg: str) -> None:
     print(
         f"[{datetime.now(TZ):%Y-%m-%d %H:%M:%S}] {msg}",
         flush=True,
     )
+
+
 def fetch(url: str, gap: float | None = None) -> str:
     """Fetch a Cinemark page with retry/backoff protection."""
+
     if gap is None:
         gap = REQUEST_GAP
+
     req = urllib.request.Request(
         url,
         headers={
@@ -84,8 +110,11 @@ def fetch(url: str, gap: float | None = None) -> str:
             "Accept-Encoding": "gzip",
         },
     )
+
     retry_after = 0
+
     for attempt, backoff in enumerate([0, *BACKOFF_SCHEDULE]):
+
         if backoff:
             wait = max(backoff, retry_after)
             log(
@@ -93,21 +122,26 @@ def fetch(url: str, gap: float | None = None) -> str:
                 f"{wait}s (attempt {attempt})"
             )
             time.sleep(wait)
+
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 body = resp.read()
+
                 if resp.headers.get("Content-Encoding") == "gzip":
                     body = gzip.decompress(body)
-            # Small randomized delay prevents perfectly regular requests.
+
             if gap > 0:
                 time.sleep(
                     gap + gap / 2 * random.random()
                 )
+
             return body.decode(
                 "utf-8",
                 errors="replace",
             )
+
         except urllib.error.HTTPError as e:
+
             if e.code not in (
                 429,
                 403,
@@ -116,6 +150,7 @@ def fetch(url: str, gap: float | None = None) -> str:
                 503,
             ):
                 raise
+
             try:
                 retry_after = min(
                     int(
@@ -128,23 +163,30 @@ def fetch(url: str, gap: float | None = None) -> str:
                 )
             except ValueError:
                 retry_after = 0
+
         except (
             urllib.error.URLError,
             TimeoutError,
         ):
             pass
+
     raise RuntimeError(
         f"gave up fetching {url} after "
         f"{len(BACKOFF_SCHEDULE)} backoffs"
     )
+
+
 def notify(title: str, message: str) -> None:
     log(f"ALERT: {title}: {message}")
+
     with ALERT_LOG.open("a") as f:
         f.write(
             f"{datetime.now().isoformat()}  "
             f"{title}: {message}\n"
         )
+
     hook = HERE / "notify-hook"
+
     if hook.exists() and os.access(
         hook,
         os.X_OK,
@@ -163,16 +205,22 @@ def notify(title: str, message: str) -> None:
             log(
                 f"WARN: notify-hook failed: {e!r}"
             )
+
+
 def load_state() -> dict:
     if STATE_FILE.exists():
         return json.loads(
             STATE_FILE.read_text()
         )
+
     return {
         "dates": {},
         "seats": {},
         "cycle": 0,
+        "last_showtime_refresh": None,
     }
+
+
 def save_state(state: dict) -> None:
     STATE_FILE.write_text(
         json.dumps(
@@ -181,30 +229,36 @@ def save_state(state: dict) -> None:
             sort_keys=True,
         )
     )
+
+
 def showtimes_for(
     date: str,
 ) -> tuple[str | None, dict[str, str]]:
     """Get Seven Bridges theater ID and showtimes for one date."""
+
     url = (
         f"{BASE}/theatres/"
         f"{THEATER}?showDate={date}"
     )
-    # Discovery is intentionally faster than seat-map scanning.
+
     html = fetch(
         url,
         gap=DISCOVERY_GAP,
     )
+
     links = SHOWTIME_LINK.findall(html)
+
     theater_ids = {
         theater_id
         for theater_id, _sid, _iso in links
     }
-    # We expect Seven Bridges to be TheaterId 276.
+
     if theater_ids and theater_ids != {"276"}:
         log(
             f"WARN: unexpected theater IDs "
             f"for {date}: {sorted(theater_ids)}"
         )
+
     theater_id = (
         "276"
         if "276" in theater_ids
@@ -214,24 +268,32 @@ def showtimes_for(
             else None
         )
     )
+
     shows = {
         sid: iso
         for _tid, sid, iso in links
     }
+
     return theater_id, shows
+
+
 def dates_for_next_two_weeks() -> list[str]:
     """Get Cinemark dates currently available for the next 14 days."""
+
     html = fetch(
         f"{BASE}/theatres/{THEATER}",
         gap=DISCOVERY_GAP,
     )
+
     dates = sorted(
         set(
             DATE_VALUE.findall(html)
         )
     )
+
     today = datetime.now(TZ).date()
     cutoff = today + timedelta(days=13)
+
     return [
         d
         for d in dates
@@ -239,18 +301,22 @@ def dates_for_next_two_weeks() -> list[str]:
         <= d
         <= cutoff.isoformat()
     ]
+
+
 def showtimes_diagnostic() -> None:
     """Print fresh Showtime IDs without modifying state.json."""
+
     log(f"THEATER SLUG: {THEATER}")
     log(f"MOVIE ID: {MOVIE_ID}")
     log(f"MOVIE: {MOVIE_NAME}")
-    log(
-        "Fetching fresh dates from Cinemark..."
-    )
+    log("Fetching fresh dates from Cinemark...")
+
     dates = dates_for_next_two_weeks()
+
     if not dates:
         print("No dates found.")
         return
+
     print()
     print("=" * 72)
     print("FRESH CINEMARK SHOWTIME IDS")
@@ -261,29 +327,37 @@ def showtimes_diagnostic() -> None:
         f"Dates: {dates[0]} through {dates[-1]}"
     )
     print()
+
     all_ids = 0
     theater_ids = set()
+
     for date in dates:
+
         try:
             theater_id, shows = showtimes_for(
                 date
             )
+
         except Exception as e:  # noqa: BLE001
             print(
                 f"{date} ERROR: {e!r}"
             )
             continue
+
         if theater_id:
             theater_ids.add(
                 theater_id
             )
+
         print(date)
+
         if not shows:
             print(
                 "  No showtimes found."
             )
             print()
             continue
+
         for sid, iso in sorted(
             shows.items(),
             key=lambda kv: kv[1],
@@ -294,7 +368,9 @@ def showtimes_diagnostic() -> None:
                 f"ShowtimeId={sid}"
             )
             all_ids += 1
+
         print()
+
     print("=" * 72)
     print(
         f"TOTAL SHOWTIME IDS: {all_ids}"
@@ -310,17 +386,22 @@ def showtimes_diagnostic() -> None:
         )
     )
     print("=" * 72)
+
+
 def qualifying(iso: str) -> bool:
     return (
         EARLIEST
         <= iso[11:16]
         <= LATEST
     )
+
+
 def available_seats(
     theater_id: str,
     showtime_id: str,
     iso: str,
 ) -> list[Seat]:
+
     url = (
         f"{BASE}/TicketSeatMap/"
         f"?TheaterId={theater_id}"
@@ -328,10 +409,12 @@ def available_seats(
         f"&CinemarkMovieId={MOVIE_ID}"
         f"&Showtime={iso}"
     )
+
     html = fetch(
         url,
         gap=REQUEST_GAP,
     )
+
     if "seatBlock" not in html:
         log(
             f"WARN: seat map {showtime_id} "
@@ -339,6 +422,7 @@ def available_seats(
             f"(page changed?)"
         )
         return []
+
     return [
         Seat(
             row,
@@ -349,19 +433,26 @@ def available_seats(
         AVAILABLE_SEAT.findall(html)
         if row not in EXCLUDED_ROWS
     ]
+
+
 def seat_blocks(
     seats: list[Seat],
 ) -> list[list[Seat]]:
     """Group physically adjacent seats by row."""
+
     blocks = []
+
     rows = sorted(
         {
             s.row
             for s in seats
         }
     )
+
     for row in rows:
+
         run: list[Seat] = []
+
         row_seats = sorted(
             (
                 s
@@ -370,7 +461,9 @@ def seat_blocks(
             ),
             key=lambda s: s.col,
         )
+
         for s in row_seats:
+
             if (
                 run
                 and s.col
@@ -378,44 +471,59 @@ def seat_blocks(
             ):
                 blocks.append(run)
                 run = []
+
             run.append(s)
+
         if run:
             blocks.append(run)
+
     return blocks
+
+
 def fmt_block(
     block: list[Seat],
 ) -> str:
+
     if len(block) == 1:
         return block[0].label
+
     numbers = sorted(
         s.number
         for s in block
     )
+
     return (
         f"{block[0].row}"
         f"{numbers[0]}-"
         f"{block[0].row}"
         f"{numbers[-1]}"
     )
+
+
 def fmt_time(
     iso: str,
 ) -> str:
     return datetime.fromisoformat(
         iso
     ).strftime("%-I:%M%p").lower()
+
+
 def prune_past(
     state: dict,
 ) -> None:
+
     today = (
         datetime.now(TZ)
         .date()
         .isoformat()
     )
+
     for d in [
         d
         for d in state["dates"]
         if d < today
     ]:
+
         for sid in state[
             "dates"
         ][d]["showtimes"]:
@@ -425,105 +533,235 @@ def prune_past(
                 sid,
                 None,
             )
+
         del state[
             "dates"
         ][d]
-def sweep(
-    state: dict,
-    scan_dates: bool,
-    only_dates: list[str] | None,
-) -> None:
-    first_run = not state["dates"]
-    prune_past(state)
-    # Refresh the available dates/showtime IDs periodically.
-    # DATE_SCAN_EVERY is normally 3, so with a 5-minute
-    # polling interval this refreshes them every ~15 minutes.
-    if (
-        scan_dates
-        or first_run
-        or only_dates
-        or "theater_id" not in state
-    ):
-        try:
-            strip = (
-                only_dates
-                or dates_for_next_two_weeks()
-            )
-        except Exception as e:
-            log(
-                f"WARN: fresh date discovery failed: {e!r}"
-            )
-            log(
-                "WARN: continuing with previously saved "
-                "Showtime IDs"
-            )
-            strip = []
 
-        for date in sorted(set(strip)):
-            try:
-                theater_id, shows = (
-                    showtimes_for(date)
-                )
-            except Exception as e:
-                log(
-                    f"WARN: date probe "
-                    f"{date} failed: {e!r}"
-                )
-                continue
-            if theater_id:
-                state[
-                    "theater_id"
-                ] = theater_id
-            # Always replace the date's showtimes
-            # during a date scan. Showtime IDs can change,
-            # so this keeps the seat scanner current.
-            old_shows = state[
-                "dates"
-            ].get(
-                date,
-                {}
-            ).get(
-                "showtimes",
-                {}
-            )
-            state[
-                "dates"
-            ][date] = {
-                "showtimes": shows
-            }
-            if (
-                shows
-                and not first_run
-                and not old_shows
-            ):
-                notify(
-                    f"New date on sale: {date}",
-                    f"{MOVIE_NAME} added for "
-                    f"{date}: "
-                    + ", ".join(
-                        sorted(
-                            fmt_time(i)
-                            for i in shows.values()
-                        )
-                    ),
-                )
-        tracked_dates = sum(
-            1
-            for d in state["dates"].values()
-            if d["showtimes"]
+
+def showtime_refresh_due(
+    state: dict,
+) -> bool:
+    """Return True when Showtime IDs should be refreshed."""
+
+    last = state.get(
+        "last_showtime_refresh"
+    )
+
+    if not last:
+        return True
+
+    try:
+        last_dt = datetime.fromisoformat(
+            last
+        )
+
+        now = datetime.now(TZ)
+
+        return (
+            now - last_dt
+        ) >= timedelta(
+            hours=SHOWTIME_REFRESH_HOURS
+        )
+
+    except (ValueError, TypeError):
+        # If the saved timestamp is corrupt or missing,
+        # safely perform a fresh discovery.
+        return True
+
+
+def refresh_showtimes(
+    state: dict,
+    only_dates: list[str] | None,
+) -> bool:
+    """
+    Refresh Cinemark dates/showtime IDs.
+
+    Returns True if the refresh completed successfully.
+    """
+
+    try:
+        strip = (
+            only_dates
+            or dates_for_next_two_weeks()
+        )
+
+    except Exception as e:
+        log(
+            f"WARN: fresh date discovery failed: {e!r}"
         )
         log(
-            f"date scan: tracking "
-            f"{tracked_dates} dates"
+            "WARN: continuing with previously saved "
+            "Showtime IDs"
         )
-        save_state(state)
+        return False
+
+    for date in sorted(
+        set(strip)
+    ):
+
+        try:
+            theater_id, shows = (
+                showtimes_for(date)
+            )
+
+        except Exception as e:
+            log(
+                f"WARN: date probe "
+                f"{date} failed: {e!r}"
+            )
+            continue
+
+        if theater_id:
+            state[
+                "theater_id"
+            ] = theater_id
+
+        old_shows = state[
+            "dates"
+        ].get(
+            date,
+            {}
+        ).get(
+            "showtimes",
+            {}
+        )
+
+        state[
+            "dates"
+        ][date] = {
+            "showtimes": shows
+        }
+
+        if (
+            shows
+            and old_shows
+            and shows != old_shows
+        ):
+            log(
+                f"showtime IDs changed for {date}: "
+                f"{len(old_shows)} old -> "
+                f"{len(shows)} current"
+            )
+
+        if (
+            shows
+            and not old_shows
+        ):
+            notify(
+                f"New date on sale: {date}",
+                f"{MOVIE_NAME} added for "
+                f"{date}: "
+                + ", ".join(
+                    sorted(
+                        fmt_time(i)
+                        for i in shows.values()
+                    )
+                ),
+            )
+
+    tracked_dates = sum(
+        1
+        for d in state["dates"].values()
+        if d["showtimes"]
+    )
+
+    log(
+        f"date/showtime refresh: "
+        f"tracking {tracked_dates} dates"
+    )
+
+    # Only mark the refresh time after the discovery
+    # request sequence actually ran.
+    state[
+        "last_showtime_refresh"
+    ] = datetime.now(TZ).isoformat()
+
+    save_state(state)
+
+    return True
+
+
+def sweep(
+    state: dict,
+    force_refresh: bool,
+    only_dates: list[str] | None,
+) -> None:
+
+    first_run = not state["dates"]
+
+    prune_past(state)
+
+    # ---------------------------------------------------------
+    # SHOWTIME DISCOVERY
+    #
+    # Normal operation:
+    #   - first run: refresh immediately
+    #   - thereafter: refresh once every 24 hours
+    #
+    # Seat maps are NOT affected by this schedule.
+    # Existing Showtime IDs continue to be scanned every cycle.
+    # ---------------------------------------------------------
+
+    refresh_needed = (
+        first_run
+        or force_refresh
+        or showtime_refresh_due(state)
+        or only_dates is not None
+    )
+
+    if refresh_needed:
+
+        if first_run:
+            log(
+                "showtime refresh: first run"
+            )
+        elif force_refresh:
+            log(
+                "showtime refresh: forced"
+            )
+        elif only_dates is not None:
+            log(
+                "showtime refresh: specific dates requested"
+            )
+        else:
+            log(
+                "showtime refresh: 24-hour refresh is due"
+            )
+
+        refresh_showtimes(
+            state,
+            only_dates,
+        )
+
+    else:
+        last = state.get(
+            "last_showtime_refresh",
+            "unknown",
+        )
+
+        log(
+            "showtime refresh: skipped "
+            "(less than 24 hours since last refresh)"
+        )
+        log(
+            f"showtime refresh last run: {last}"
+        )
+
+    # ---------------------------------------------------------
+    # BUILD SEAT-SCAN LIST FROM SAVED SHOWTIME IDs
+    # ---------------------------------------------------------
+
     today = datetime.now(TZ).date()
+
     cutoff_date = (
         today
         + timedelta(days=13)
     )
+
     today_str = today.isoformat()
     cutoff_str = cutoff_date.isoformat()
+
     watch = [
         (
             date,
@@ -546,12 +784,14 @@ def sweep(
             or date in only_dates
         )
     ]
+
     if "theater_id" not in state:
         log(
             "ERROR: no theater_id available; "
             "skipping seat scan"
         )
         return
+
     if (
         state["theater_id"]
         != "276"
@@ -563,23 +803,28 @@ def sweep(
             f"instead of 276"
         )
         return
+
     log(
         f"seat scan: checking "
         f"{len(watch)} qualifying showtimes "
         f"at TheaterId=276"
     )
+
     total = 0
+
     for i, (
         date,
         sid,
         iso,
     ) in enumerate(watch):
+
         try:
             seats = available_seats(
                 "276",
                 sid,
                 iso,
             )
+
         except Exception as e:
             log(
                 f"WARN: seat check "
@@ -588,25 +833,26 @@ def sweep(
                 f"failed: {e!r}"
             )
             continue
+
         total += len(seats)
-        # Keep recording the current seat map in state.json.
-        # We no longer use the previous map to decide whether
-        # an alert should fire.
+
+        # Record the current seat map.
         current = {
             s.label
             for s in seats
         }
+
         state[
             "seats"
         ][sid] = sorted(
             current
         )
-        # IMPORTANT:
+
         # Alert on ANY currently available qualifying block.
         #
-        # We intentionally do NOT calculate "fresh" seats here.
-        # Seats can appear and disappear between scans, so relying
-        # on a previous scan can cause us to miss a valuable opening.
+        # We intentionally do not compare against the previous
+        # scan because seats can appear and disappear between
+        # scans. A currently available block is actionable.
         openings = [
             block
             for block in seat_blocks(
@@ -614,6 +860,7 @@ def sweep(
             )
             if len(block) >= PARTY_SIZE
         ]
+
         if openings:
             notify(
                 f"Seats available "
@@ -625,27 +872,35 @@ def sweep(
                     for b in openings
                 ),
             )
+
         if i % 10 == 9:
             save_state(state)
+
     log(
         f"seat scan: "
         f"{len(watch)} showtimes checked, "
         f"{total} qualifying seats"
     )
+
     if first_run:
         log(
             "first run: availability recorded"
         )
+
+
 def report(
     state: dict,
 ) -> None:
+
     print(
         f"\n{MOVIE_NAME} @ {THEATER}"
     )
+
     print(
         f"theater_id: "
         f"{state.get('theater_id', 'unknown')}"
     )
+
     print(
         f"filters: rows "
         f"{''.join(sorted(EXCLUDED_ROWS)) or 'none'} "
@@ -653,6 +908,12 @@ def report(
         f"shows {EARLIEST}-{LATEST}, "
         f"party of {PARTY_SIZE}\n"
     )
+
+    print(
+        "showtime refresh: "
+        f"{state.get('last_showtime_refresh', 'never')}"
+    )
+
     tracked = {
         d: v
         for d, v in sorted(
@@ -660,35 +921,43 @@ def report(
         )
         if v["showtimes"]
     }
+
     if not tracked:
         print(
             "no dates tracked yet: "
             "run a sweep first"
         )
         return
+
     print(
         f"on sale: "
         f"{min(tracked)} to "
         f"{max(tracked)} "
         f"({len(tracked)} dates)\n"
     )
+
     empty = True
+
     for d, info in tracked.items():
+
         for sid, iso in sorted(
             info["showtimes"].items(),
             key=lambda kv: kv[1],
         ):
+
             seats = state[
                 "seats"
             ].get(
                 sid,
-                []
+                [],
             )
+
             if (
                 qualifying(iso)
                 and seats
             ):
                 empty = False
+
                 print(
                     f"  {d} "
                     f"{fmt_time(iso):>8} "
@@ -696,18 +965,24 @@ def report(
                     f"{', '.join(seats[:14])}"
                     f"{'...' if len(seats) > 14 else ''}"
                 )
+
     if empty:
         print(
             "no qualifying seats right now: "
             "the watcher alerts when one is available"
         )
+
+
 def main() -> None:
+
     ap = argparse.ArgumentParser()
+
     ap.add_argument(
         "--once",
         action="store_true",
         help="single sweep, then exit",
     )
+
     ap.add_argument(
         "--dates",
         nargs="*",
@@ -716,6 +991,7 @@ def main() -> None:
             "specific YYYY-MM-DD dates"
         ),
     )
+
     ap.add_argument(
         "--report",
         action="store_true",
@@ -724,6 +1000,7 @@ def main() -> None:
             "state.json and exit"
         ),
     )
+
     ap.add_argument(
         "--showtimes",
         action="store_true",
@@ -733,44 +1010,50 @@ def main() -> None:
             "next 14 days"
         ),
     )
+
     args = ap.parse_args()
+
     if args.report:
         report(
             load_state()
         )
         return
+
     if args.showtimes:
         showtimes_diagnostic()
         return
+
     while True:
+
         state = load_state()
-        cycle = state.get(
-            "cycle",
-            0,
-        )
+
         try:
             sweep(
                 state,
-                scan_dates=(
-                    cycle
-                    % DATE_SCAN_EVERY
-                    == 0
-                ),
+                force_refresh=False,
                 only_dates=args.dates,
             )
+
         except Exception as e:
             log(
                 f"ERROR during sweep: "
                 f"{e!r}"
             )
+
         state["cycle"] = (
-            cycle + 1
+            state.get("cycle", 0)
+            + 1
         )
+
         save_state(state)
+
         if args.once:
             return
+
         time.sleep(
             POLL_MINUTES * 60
         )
+
+
 if __name__ == "__main__":
     main()
