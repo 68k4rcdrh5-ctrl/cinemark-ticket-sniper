@@ -34,5 +34,3 @@ request_gap_seconds = 8
 # Probe for newly added dates every Nth sweep (seat checks happen every sweep).
 date_scan_every = 3
 
-# Loop mode only; on GitHub Actions the cadence comes from the workflow cron.
-poll_minutes = 25
