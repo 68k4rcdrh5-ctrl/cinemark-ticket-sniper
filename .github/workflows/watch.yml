@@ -12,14 +12,9 @@ on:
         type: boolean
         default: false
 
-      showtimes:
-        description: "Fetch fresh Showtime IDs from Seven Bridges for the next 14 days"
-        type: boolean
-        default: false
-
 concurrency:
   group: watcher
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -28,7 +23,7 @@ permissions:
 jobs:
   sweep:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
 
     env:
       GH_TOKEN: ${{ github.token }}
@@ -43,16 +38,12 @@ jobs:
           "Test alert"
           "The email channel works."
 
-      - name: Show fresh Showtime IDs
-        if: ${{ inputs.showtimes && !inputs.test_alert }}
-        run: python3 watch.py --showtimes
-
       - name: Run sweep
-        if: ${{ !inputs.test_alert && !inputs.showtimes }}
+        if: ${{ !inputs.test_alert }}
         run: python3 watch.py --once
 
       - name: Persist state
-        if: ${{ !inputs.showtimes }}
+        if: ${{ !inputs.test_alert }}
         run: |
           git config user.name "odyssey-watcher[bot]"
           git config user.email "actions@users.noreply.github.com"
