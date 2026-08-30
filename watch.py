@@ -69,7 +69,7 @@ class Seat:
         return f"{self.row}{self.number}"
 def log(msg: str) -> None:
     print(
-        f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}",
+        f"[{datetime.now(TZ):%Y-%m-%d %H:%M:%S}] {msg}",
         flush=True,
     )
 def fetch(url: str, gap: float | None = None) -> str:
@@ -444,13 +444,22 @@ def sweep(
         or only_dates
         or "theater_id" not in state
     ):
-        strip = (
-            only_dates
-            or dates_for_next_two_weeks()
-        )
-        for date in sorted(
-            set(strip)
-        ):
+        try:
+            strip = (
+                only_dates
+                or dates_for_next_two_weeks()
+            )
+        except Exception as e:
+            log(
+                f"WARN: fresh date discovery failed: {e!r}"
+            )
+            log(
+                "WARN: continuing with previously saved "
+                "Showtime IDs"
+            )
+            strip = []
+
+        for date in sorted(set(strip)):
             try:
                 theater_id, shows = (
                     showtimes_for(date)
