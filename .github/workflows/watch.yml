@@ -4,6 +4,7 @@ on:
   schedule:
     # Run every 25 minutes.
     - cron: "3,28,53 * * * *"
+
   workflow_dispatch:
     inputs:
       test_alert:
@@ -13,7 +14,7 @@ on:
 
 concurrency:
   group: watcher
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -22,7 +23,7 @@ permissions:
 jobs:
   sweep:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
 
     env:
       GH_TOKEN: ${{ github.token }}
@@ -39,7 +40,7 @@ jobs:
 
       - name: Run sweep
         if: ${{ !inputs.test_alert }}
-        run: python3 watch.py --once
+        run: python3 watch.py
 
       - name: Persist state
         if: ${{ !inputs.test_alert }}
