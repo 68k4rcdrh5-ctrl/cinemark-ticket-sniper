@@ -49,18 +49,6 @@ UA = (
     "Chrome/126.0.0.0 Safari/537.36"
 )
 
-DATE_VALUE = re.compile(
-    r'data-datevalue="(\d{4}-\d{2}-\d{2})"'
-)
-
-SHOWTIME_LINK = re.compile(
-    r'/TicketSeatMap/\?TheaterId=(\d+)'
-    r'&(?:amp;)?ShowtimeId=(\d+)'
-    r'&(?:amp;)?CinemarkMovieId='
-    + re.escape(MOVIE_ID)
-    + r'&(?:amp;)?Showtime=([\d\-T:]+)'
-)
-
 AVAILABLE_SEAT = re.compile(
     r'<button[^>]*class="seatAvailable seatBlock"[^>]*'
     r'info="([A-Z]+),(\d+),\d+,(\d+),'
@@ -204,163 +192,6 @@ def save_state(state: dict) -> None:
             sort_keys=True,
         )
     )
-
-
-def showtimes_for(
-    date: str,
-) -> tuple[str | None, dict[str, str]]:
-    """Get Seven Bridges theater ID and showtimes for one date."""
-
-    url = (
-        f"{BASE}/theatres/"
-        f"{THEATER}?showDate={date}"
-    )
-
-    html = fetch(
-        url,
-        gap=1.0,
-    )
-
-    links = SHOWTIME_LINK.findall(html)
-
-    theater_ids = {
-        theater_id
-        for theater_id, _sid, _iso in links
-    }
-
-    if theater_ids and theater_ids != {"276"}:
-        log(
-            f"WARN: unexpected theater IDs "
-            f"for {date}: {sorted(theater_ids)}"
-        )
-
-    theater_id = (
-        "276"
-        if "276" in theater_ids
-        else (
-            next(iter(theater_ids))
-            if theater_ids
-            else None
-        )
-    )
-
-    shows = {
-        sid: iso
-        for _tid, sid, iso in links
-    }
-
-    return theater_id, shows
-
-
-def dates_for_next_two_weeks() -> list[str]:
-    """Get Cinemark dates currently available for the next 14 days."""
-
-    html = fetch(
-        f"{BASE}/theatres/{THEATER}",
-        gap=1.0,
-    )
-
-    dates = sorted(
-        set(
-            DATE_VALUE.findall(html)
-        )
-    )
-
-    today = datetime.now(TZ).date()
-    cutoff = today + timedelta(days=13)
-
-    return [
-        d
-        for d in dates
-        if today.isoformat()
-        <= d
-        <= cutoff.isoformat()
-    ]
-
-
-def showtimes_diagnostic() -> None:
-    """Print fresh Showtime IDs without modifying state.json."""
-
-    log(f"THEATER SLUG: {THEATER}")
-    log(f"MOVIE ID: {MOVIE_ID}")
-    log(f"MOVIE: {MOVIE_NAME}")
-    log("Fetching fresh dates from Cinemark...")
-
-    dates = dates_for_next_two_weeks()
-
-    if not dates:
-        print("No dates found.")
-        return
-
-    print()
-    print("=" * 72)
-    print("FRESH CINEMARK SHOWTIME IDS")
-    print("=" * 72)
-    print(f"Theater: {THEATER}")
-    print(f"Movie ID: {MOVIE_ID}")
-    print(
-        f"Dates: {dates[0]} through {dates[-1]}"
-    )
-    print()
-
-    all_ids = 0
-    theater_ids = set()
-
-    for date in dates:
-
-        try:
-            theater_id, shows = showtimes_for(
-                date
-            )
-
-        except Exception as e:  # noqa: BLE001
-            print(
-                f"{date} ERROR: {e!r}"
-            )
-            continue
-
-        if theater_id:
-            theater_ids.add(
-                theater_id
-            )
-
-        print(date)
-
-        if not shows:
-            print(
-                "  No showtimes found."
-            )
-            print()
-            continue
-
-        for sid, iso in sorted(
-            shows.items(),
-            key=lambda kv: kv[1],
-        ):
-            print(
-                f"  {fmt_time(iso):>8}  "
-                f"TheaterId={theater_id}  "
-                f"ShowtimeId={sid}"
-            )
-            all_ids += 1
-
-        print()
-
-    print("=" * 72)
-    print(
-        f"TOTAL SHOWTIME IDS: {all_ids}"
-    )
-    print(
-        "THEATER IDS FOUND: "
-        + (
-            ", ".join(
-                sorted(theater_ids)
-            )
-            if theater_ids
-            else "none"
-        )
-    )
-    print("=" * 72)
 
 
 def qualifying(iso: str) -> bool:
@@ -522,14 +353,12 @@ def sweep(
     prune_past(state)
 
     # ---------------------------------------------------------
-    # NO SHOWTIME DISCOVERY HERE.
+    # NO SHOWTIME DISCOVERY.
     #
-    # The watcher uses the Showtime IDs already stored in
-    # state.json. This avoids repeatedly requesting Cinemark's
-    # theater pages and reduces the chance of being blocked.
+    # The watcher uses only Showtime IDs already stored in
+    # state.json. Normal sweeps make seat-map requests only.
     #
-    # New Showtime IDs must be added manually if Cinemark
-    # changes/adds them.
+    # New Showtime IDs must be added to state.json separately.
     # ---------------------------------------------------------
 
     today = datetime.now(TZ).date()
@@ -778,7 +607,6 @@ def main() -> None:
     try:
         sweep(
             state,
-            force_refresh=False,
             only_dates=args.dates,
         )
 
