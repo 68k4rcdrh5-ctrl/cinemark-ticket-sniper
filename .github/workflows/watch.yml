@@ -2,9 +2,8 @@ name: watch
 
 on:
   schedule:
-    # Run every 10 minutes.
-    - cron: "3,13,23,33,43,53 * * * *"
-
+    # Run every 25 minutes.
+    - cron: "3,28,53 * * * *"
   workflow_dispatch:
     inputs:
       test_alert:
