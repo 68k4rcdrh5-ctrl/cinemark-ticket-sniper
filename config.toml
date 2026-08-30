@@ -35,4 +35,4 @@ request_gap_seconds = 8
 date_scan_every = 3
 
 # Loop mode only; on GitHub Actions the cadence comes from the workflow cron.
-poll_minutes = 5
+poll_minutes = 25
