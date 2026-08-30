@@ -1,5 +1,5 @@
 {
- "cycle": 27,
+ "cycle": 28,
  "dates": {
   "2026-08-30": {
    "showtimes": {
@@ -123,7 +123,7 @@
    }
   }
  },
- "scan_cursor": 20,
+ "scan_cursor": 30,
  "seats": {
   "605973": [],
   "605975": [],
