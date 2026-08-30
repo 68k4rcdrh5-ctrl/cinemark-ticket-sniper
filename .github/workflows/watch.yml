@@ -2,7 +2,6 @@ name: watch
 
 on:
   schedule:
-    # Run every 25 minutes.
     - cron: "3,28,53 * * * *"
 
   workflow_dispatch:
