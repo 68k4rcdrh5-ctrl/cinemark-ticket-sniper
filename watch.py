@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Watch Cinemark Seven Bridges for seat openings."""
+"""Watch Cinemark Seven Bridges for seat openings.
+
+This version intentionally does NOT perform Showtime-ID discovery.
+
+It scans only the Showtime IDs already stored in state.json.
+
+GitHub Actions is responsible for scheduling runs. The script performs
+one bounded sweep and exits.
+"""
 
 from __future__ import annotations
 
@@ -8,39 +16,104 @@ import gzip
 import json
 import os
 import random
-import re
 import subprocess
 import time
 import tomllib
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
 
 HERE = Path(__file__).parent
 STATE_FILE = HERE / "state.json"
 ALERT_LOG = HERE / "alerts.log"
 
-_cfg = tomllib.loads((HERE / "config.toml").read_text())
+
+_cfg = tomllib.loads(
+    (HERE / "config.toml").read_text()
+)
+
 TARGET = _cfg["target"]
 FILTERS = _cfg["filters"]
 PACING = _cfg.get("pacing", {})
 
+
 THEATER = TARGET["theater"]
 MOVIE_ID = str(TARGET["movie_id"])
-MOVIE_NAME = TARGET.get("movie_name", f"movie {MOVIE_ID}")
-TZ = ZoneInfo(TARGET.get("timezone", "UTC"))
+MOVIE_NAME = TARGET.get(
+    "movie_name",
+    f"movie {MOVIE_ID}",
+)
 
-EXCLUDED_ROWS = set(FILTERS.get("excluded_rows", []))
-EARLIEST = FILTERS.get("earliest_showtime", "00:00")
-LATEST = FILTERS.get("latest_showtime", "23:59")
-PARTY_SIZE = int(FILTERS.get("party_size", 1))
+TZ = ZoneInfo(
+    TARGET.get(
+        "timezone",
+        "UTC",
+    )
+)
 
-REQUEST_GAP = float(PACING.get("request_gap_seconds", 8))
+
+EXCLUDED_ROWS = set(
+    FILTERS.get(
+        "excluded_rows",
+        [],
+    )
+)
+
+EARLIEST = FILTERS.get(
+    "earliest_showtime",
+    "00:00",
+)
+
+LATEST = FILTERS.get(
+    "latest_showtime",
+    "23:59",
+)
+
+PARTY_SIZE = int(
+    FILTERS.get(
+        "party_size",
+        1,
+    )
+)
+
+
+# ---------------------------------------------------------
+# REQUEST PACING
+# ---------------------------------------------------------
+#
+# This is the delay between successful seat-map requests.
+#
+# GitHub Actions controls HOW OFTEN the workflow runs.
+# watch.py does NOT contain a polling loop.
+#
+REQUEST_GAP = float(
+    PACING.get(
+        "request_gap_seconds",
+        8,
+    )
+)
+
+
+# Maximum number of Cinemark seat-map pages checked in
+# a single GitHub Actions run.
+#
+# This is intentionally bounded because a full state file
+# can contain many showtimes.
+#
+MAX_SEATMAPS_PER_RUN = int(
+    PACING.get(
+        "max_seatmaps_per_run",
+        10,
+    )
+)
+
 
 BASE = "https://www.cinemark.com"
+
 
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -48,7 +121,8 @@ UA = (
     "Chrome/126.0.0.0 Safari/537.36"
 )
 
-AVAILABLE_SEAT = re.compile(
+
+AVAILABLE_SEAT = re_compile = (
     r'<button[^>]*class="seatAvailable seatBlock"[^>]*'
     r'info="([A-Z]+),(\d+),\d+,(\d+),'
 )
@@ -67,13 +141,22 @@ class Seat:
 
 def log(msg: str) -> None:
     print(
-        f"[{datetime.now(TZ):%Y-%m-%d %H:%M:%S}] {msg}",
+        f"[{datetime.now(TZ):%Y-%m-%d %H:%M:%S}] "
+        f"{msg}",
         flush=True,
     )
 
 
-def fetch(url: str, gap: float | None = None) -> str:
-    """Fetch a Cinemark page with one short retry."""
+def fetch(
+    url: str,
+    gap: float | None = None,
+) -> str:
+    """Fetch a page with one short retry.
+
+    There is deliberately no long exponential/backoff loop.
+    If Cinemark blocks the request, we retry once after 30 seconds
+    and then abandon that particular seat-map request.
+    """
 
     if gap is None:
         gap = REQUEST_GAP
@@ -82,7 +165,10 @@ def fetch(url: str, gap: float | None = None) -> str:
         url,
         headers={
             "User-Agent": UA,
-            "Accept": "text/html,application/xhtml+xml",
+            "Accept": (
+                "text/html,"
+                "application/xhtml+xml"
+            ),
             "Accept-Encoding": "gzip",
         },
     )
@@ -91,22 +177,40 @@ def fetch(url: str, gap: float | None = None) -> str:
 
         if attempt:
             wait = 30
+
             log(
-                f"rate-limited/blocked, backing off "
-                f"{wait}s (retry {attempt})"
+                f"rate-limited/blocked, "
+                f"backing off {wait}s "
+                f"(retry {attempt})"
             )
+
             time.sleep(wait)
 
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+
+            with urllib.request.urlopen(
+                req,
+                timeout=30,
+            ) as resp:
+
                 body = resp.read()
 
-                if resp.headers.get("Content-Encoding") == "gzip":
-                    body = gzip.decompress(body)
+                if (
+                    resp.headers.get(
+                        "Content-Encoding"
+                    )
+                    == "gzip"
+                ):
+                    body = gzip.decompress(
+                        body
+                    )
 
             if gap > 0:
                 time.sleep(
-                    gap + gap / 2 * random.random()
+                    gap
+                    + gap
+                    / 2
+                    * random.random()
                 )
 
             return body.decode(
@@ -125,30 +229,55 @@ def fetch(url: str, gap: float | None = None) -> str:
             ):
                 raise
 
+            log(
+                f"WARN: HTTP {e.code} "
+                f"for {url}"
+            )
+
         except (
             urllib.error.URLError,
             TimeoutError,
-        ):
-            pass
+        ) as e:
+
+            log(
+                f"WARN: request failed "
+                f"for {url}: {e!r}"
+            )
 
     raise RuntimeError(
-        f"gave up fetching {url} after 1 retry"
+        f"gave up fetching {url} "
+        f"after 1 retry"
     )
 
 
-def notify(title: str, message: str) -> None:
-    log(f"ALERT: {title}: {message}")
+def notify(
+    title: str,
+    message: str,
+) -> None:
+
+    log(
+        f"ALERT: {title}: {message}"
+    )
 
     with ALERT_LOG.open("a") as f:
+
         f.write(
-            f"{datetime.now().isoformat()}  "
+            f"{datetime.now(TZ).isoformat()}  "
             f"{title}: {message}\n"
         )
 
     hook = HERE / "notify-hook"
 
-    if hook.exists() and os.access(hook, os.X_OK):
+    if (
+        hook.exists()
+        and os.access(
+            hook,
+            os.X_OK,
+        )
+    ):
+
         try:
+
             subprocess.run(
                 [
                     str(hook),
@@ -157,38 +286,52 @@ def notify(title: str, message: str) -> None:
                 ],
                 capture_output=True,
                 timeout=30,
+                check=False,
             )
-        except Exception as e:
+
+        except Exception as e:  # noqa: BLE001
+
             log(
-                f"WARN: notify-hook failed: {e!r}"
+                f"WARN: notify-hook failed: "
+                f"{e!r}"
             )
 
 
 def load_state() -> dict:
+
     if STATE_FILE.exists():
+
         return json.loads(
             STATE_FILE.read_text()
         )
 
     return {
+        "cycle": 0,
         "dates": {},
         "seats": {},
-        "cycle": 0,
         "theater_id": "276",
+        "scan_cursor": 0,
     }
 
 
-def save_state(state: dict) -> None:
+def save_state(
+    state: dict,
+) -> None:
+
     STATE_FILE.write_text(
         json.dumps(
             state,
             indent=1,
             sort_keys=True,
         )
+        + "\n"
     )
 
 
-def qualifying(iso: str) -> bool:
+def qualifying(
+    iso: str,
+) -> bool:
+
     return (
         EARLIEST
         <= iso[11:16]
@@ -216,11 +359,14 @@ def available_seats(
     )
 
     if "seatBlock" not in html:
+
         log(
-            f"WARN: seat map {showtime_id} "
+            f"WARN: seat map "
+            f"{showtime_id} "
             f"returned no seat markup "
             f"(page changed?)"
         )
+
         return []
 
     return [
@@ -229,8 +375,11 @@ def available_seats(
             int(num),
             int(col),
         )
-        for row, num, col in
-        AVAILABLE_SEAT.findall(html)
+        for row, num, col
+        in re.findall(
+            AVAILABLE_SEAT,
+            html,
+        )
         if row not in EXCLUDED_ROWS
     ]
 
@@ -238,17 +387,16 @@ def available_seats(
 def seat_blocks(
     seats: list[Seat],
 ) -> list[list[Seat]]:
+    """Group physically adjacent available seats by row."""
 
-    blocks = []
+    blocks: list[list[Seat]] = []
 
-    rows = sorted(
+    for row in sorted(
         {
             s.row
             for s in seats
         }
-    )
-
-    for row in rows:
+    ):
 
         run: list[Seat] = []
 
@@ -268,6 +416,7 @@ def seat_blocks(
                 and s.col
                 != run[-1].col + 1
             ):
+
                 blocks.append(run)
                 run = []
 
@@ -305,7 +454,9 @@ def fmt_time(
 
     return datetime.fromisoformat(
         iso
-    ).strftime("%-I:%M%p").lower()
+    ).strftime(
+        "%-I:%M%p"
+    ).lower()
 
 
 def prune_past(
@@ -318,7 +469,7 @@ def prune_past(
         .isoformat()
     )
 
-    for d in [
+    for date in [
         d
         for d in state["dates"]
         if d < today
@@ -326,7 +477,7 @@ def prune_past(
 
         for sid in state[
             "dates"
-        ][d]["showtimes"]:
+        ][date]["showtimes"]:
 
             state[
                 "seats"
@@ -337,25 +488,21 @@ def prune_past(
 
         del state[
             "dates"
-        ][d]
+        ][date]
 
 
-def sweep(
+def build_watch_list(
     state: dict,
-    only_dates: list[str] | None = None,
-) -> None:
+    only_dates: list[str] | None,
+) -> list[
+    tuple[str, str, str]
+]:
 
-    prune_past(state)
-
-    today = datetime.now(TZ).date()
-
-    cutoff_date = (
-        today
-        + timedelta(days=13)
+    today = (
+        datetime.now(TZ)
+        .date()
+        .isoformat()
     )
-
-    today_str = today.isoformat()
-    cutoff_str = cutoff_date.isoformat()
 
     watch = [
         (
@@ -363,40 +510,165 @@ def sweep(
             sid,
             iso,
         )
-        for date, info in sorted(
+        for date, info
+        in sorted(
             state["dates"].items()
         )
-        if today_str
-        <= date
-        <= cutoff_str
-        for sid, iso in sorted(
-            info["showtimes"].items(),
+
+        if date >= today
+
+        for sid, iso
+        in sorted(
+            info[
+                "showtimes"
+            ].items(),
             key=lambda kv: kv[1],
         )
+
         if qualifying(iso)
+
         and (
             not only_dates
             or date in only_dates
         )
     ]
 
-    if "theater_id" not in state:
-        state["theater_id"] = "276"
+    return watch
 
-    if state["theater_id"] != "276":
-        log(
-            "ERROR: refusing seat scan "
-            f"because TheaterId is "
-            f"{state['theater_id']} "
-            f"instead of 276"
+
+def select_shard(
+    watch: list[
+        tuple[str, str, str]
+    ],
+    cursor: int,
+) -> tuple[
+    list[tuple[str, str, str]],
+    int,
+]:
+    """Select a bounded rotating group of showtimes."""
+
+    if not watch:
+        return [], 0
+
+    cursor %= len(watch)
+
+    count = min(
+        MAX_SEATMAPS_PER_RUN,
+        len(watch),
+    )
+
+    selected = [
+        watch[
+            (cursor + offset)
+            % len(watch)
+        ]
+        for offset in range(count)
+    ]
+
+    next_cursor = (
+        cursor + count
+    ) % len(watch)
+
+    return (
+        selected,
+        next_cursor,
+    )
+
+
+def sweep(
+    state: dict,
+    only_dates: list[str] | None,
+) -> None:
+
+    prune_past(state)
+
+    theater_id = str(
+        state.get(
+            "theater_id",
+            "276",
         )
+    )
+
+    if theater_id != "276":
+
+        log(
+            f"ERROR: refusing seat scan "
+            f"because TheaterId is "
+            f"{theater_id} instead of 276"
+        )
+
         return
+
+    watch = build_watch_list(
+        state,
+        only_dates,
+    )
+
+    if not watch:
+
+        log(
+            "seat scan: no qualifying "
+            "showtimes in state.json"
+        )
+
+        return
+
+    # ---------------------------------------------------------
+    # ROTATING SEAT-MAP SHARDS
+    # ---------------------------------------------------------
+    #
+    # Normal scheduled runs:
+    #   scan MAX_SEATMAPS_PER_RUN
+    #   advance scan_cursor
+    #
+    # Manual --dates runs:
+    #   scan the requested dates from the beginning
+    #   without modifying the persistent cursor.
+    #
+    if only_dates:
+
+        selected = watch[
+            :MAX_SEATMAPS_PER_RUN
+        ]
+
+        next_cursor = state.get(
+            "scan_cursor",
+            0,
+        )
+
+    else:
+
+        cursor = int(
+            state.get(
+                "scan_cursor",
+                0,
+            )
+        )
+
+        (
+            selected,
+            next_cursor,
+        ) = select_shard(
+            watch,
+            cursor,
+        )
 
     log(
         f"seat scan: checking "
-        f"{len(watch)} qualifying showtimes "
-        f"at TheaterId=276"
+        f"{len(selected)} of "
+        f"{len(watch)} qualifying "
+        f"showtimes at TheaterId=276"
     )
+
+    if (
+        len(watch)
+        > len(selected)
+    ):
+
+        log(
+            f"seat scan: rotating shard; "
+            f"next cursor {next_cursor}"
+        )
 
     total = 0
 
@@ -404,61 +676,83 @@ def sweep(
         date,
         sid,
         iso,
-    ) in enumerate(watch):
+    ) in enumerate(
+        selected
+    ):
 
         try:
+
             seats = available_seats(
-                "276",
+                theater_id,
                 sid,
                 iso,
             )
 
         except Exception as e:
+
             log(
                 f"WARN: seat check "
                 f"{date} "
                 f"{fmt_time(iso)} "
+                f"ShowtimeId={sid} "
                 f"failed: {e!r}"
             )
+
             continue
 
         total += len(seats)
 
-        current = {
-            s.label
-            for s in seats
-        }
+        current = sorted(
+            {
+                s.label
+                for s in seats
+            }
+        )
 
         state[
             "seats"
-        ][sid] = sorted(
-            current
-        )
+        ][sid] = current
 
         openings = [
             block
-            for block in seat_blocks(seats)
-            if len(block) >= PARTY_SIZE
+            for block in seat_blocks(
+                seats
+            )
+            if len(block)
+            >= PARTY_SIZE
         ]
 
         if openings:
+
             notify(
-                f"Seats available "
-                f"{date} "
-                f"{fmt_time(iso)}",
-                f"{MOVIE_NAME}: "
-                + ", ".join(
-                    fmt_block(b)
-                    for b in openings
+                (
+                    f"Seats available "
+                    f"{date} "
+                    f"{fmt_time(iso)}"
+                ),
+                (
+                    f"{MOVIE_NAME}: "
+                    + ", ".join(
+                        fmt_block(b)
+                        for b in openings
+                    )
                 ),
             )
 
-        if i % 10 == 9:
+        # Save periodically so availability already collected
+        # during a run is not lost if the job is interrupted.
+        if i % 5 == 4:
             save_state(state)
+
+    if not only_dates:
+
+        state[
+            "scan_cursor"
+        ] = next_cursor
 
     log(
         f"seat scan: "
-        f"{len(watch)} showtimes checked, "
+        f"{len(selected)} showtimes checked, "
         f"{total} qualifying seats"
     )
 
@@ -481,21 +775,29 @@ def report(
         f"{''.join(sorted(EXCLUDED_ROWS)) or 'none'} "
         f"excluded, "
         f"shows {EARLIEST}-{LATEST}, "
-        f"party of {PARTY_SIZE}\n"
+        f"party of {PARTY_SIZE}"
+    )
+
+    print(
+        f"scan cursor: "
+        f"{state.get('scan_cursor', 0)}"
     )
 
     tracked = {
         d: v
-        for d, v in sorted(
+        for d, v
+        in sorted(
             state["dates"].items()
         )
         if v["showtimes"]
     }
 
     if not tracked:
+
         print(
-            "no dates tracked"
+            "no dates tracked yet"
         )
+
         return
 
     print(
@@ -507,10 +809,12 @@ def report(
 
     empty = True
 
-    for d, info in tracked.items():
+    for date, info in tracked.items():
 
         for sid, iso in sorted(
-            info["showtimes"].items(),
+            info[
+                "showtimes"
+            ].items(),
             key=lambda kv: kv[1],
         ):
 
@@ -521,11 +825,15 @@ def report(
                 [],
             )
 
-            if qualifying(iso) and seats:
+            if (
+                qualifying(iso)
+                and seats
+            ):
+
                 empty = False
 
                 print(
-                    f"  {d} "
+                    f"  {date} "
                     f"{fmt_time(iso):>8} "
                     f"{len(seats):>3} seats: "
                     f"{', '.join(seats[:14])}"
@@ -533,8 +841,10 @@ def report(
                 )
 
     if empty:
+
         print(
-            "no qualifying seats right now"
+            "no qualifying seats "
+            "currently recorded"
         )
 
 
@@ -543,40 +853,63 @@ def main() -> None:
     ap = argparse.ArgumentParser()
 
     ap.add_argument(
+        "--once",
+        action="store_true",
+        help="single sweep, then exit",
+    )
+
+    ap.add_argument(
         "--dates",
         nargs="*",
-        help="restrict a sweep to specific dates",
+        help=(
+            "restrict a sweep to "
+            "specific YYYY-MM-DD dates"
+        ),
     )
 
     ap.add_argument(
         "--report",
         action="store_true",
-        help="print availability from state.json and exit",
+        help=(
+            "print availability from "
+            "state.json and exit"
+        ),
     )
 
     args = ap.parse_args()
 
     if args.report:
-        report(load_state())
+
+        report(
+            load_state()
+        )
+
         return
 
     state = load_state()
 
     try:
+
         sweep(
             state,
             only_dates=args.dates,
         )
 
     except Exception as e:
+
         log(
-            f"ERROR during sweep: {e!r}"
+            f"ERROR during sweep: "
+            f"{e!r}"
         )
 
-    state["cycle"] = (
-        state.get("cycle", 0)
-        + 1
-    )
+    state[
+        "cycle"
+    ] = int(
+        state.get(
+            "cycle",
+            0,
+        )
+    ) + 1
 
     save_state(state)
 
