@@ -2,6 +2,7 @@ name: watch
 
 on:
   schedule:
+    # Run every 25 minutes.
     - cron: "3,28,53 * * * *"
 
   workflow_dispatch:
@@ -10,6 +11,11 @@ on:
         description: "Fire a test alert instead of sweeping"
         type: boolean
         default: false
+
+      dates:
+        description: "Optional dates to scan manually, e.g. 2026-09-01 2026-09-02"
+        required: false
+        type: string
 
 concurrency:
   group: watcher
@@ -22,13 +28,18 @@ permissions:
 jobs:
   sweep:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+
+    # A normal run should finish well before this.
+    # This prevents a blocked request from consuming
+    # an excessively long Actions job.
+    timeout-minutes: 10
 
     env:
       GH_TOKEN: ${{ github.token }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Test alert
         if: ${{ inputs.test_alert }}
@@ -37,9 +48,14 @@ jobs:
           "Test alert"
           "The email channel works."
 
-      - name: Run sweep
-        if: ${{ !inputs.test_alert }}
-        run: python3 watch.py
+      - name: Run scheduled sweep
+        if: ${{ !inputs.test_alert && !inputs.dates }}
+        run: python3 watch.py --once
+
+      - name: Run manual date sweep
+        if: ${{ !inputs.test_alert && inputs.dates }}
+        run: |
+          python3 watch.py --once --dates ${{ inputs.dates }}
 
       - name: Persist state
         if: ${{ !inputs.test_alert }}
