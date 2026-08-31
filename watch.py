@@ -250,6 +250,7 @@ def fetch(
     )
 
 
+
 def notify(
     title: str,
     message: str,
