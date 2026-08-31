@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Watch Cinemark Seven Bridges for seat openings.
 
-This version intentionally does NOT perform Showtime-ID discovery.
+Showtime IDs are intentionally NOT discovered dynamically.
 
-It scans only the Showtime IDs already stored in state.json.
+The only source of Showtime IDs is state.json.
 
-GitHub Actions is responsible for scheduling runs. The script performs
-one bounded sweep and exits.
+GitHub Actions is responsible for scheduling runs.
+Each run performs ONE bounded-by-state sweep and exits.
+
+Every qualifying showtime currently stored in state.json
+is checked on every run.
 """
 
 from __future__ import annotations
@@ -99,20 +102,6 @@ REQUEST_GAP = float(
 )
 
 
-# Maximum number of Cinemark seat-map pages checked in
-# a single GitHub Actions run.
-#
-# This is intentionally bounded because a full state file
-# can contain many showtimes.
-#
-MAX_SEATMAPS_PER_RUN = int(
-    PACING.get(
-        "max_seatmaps_per_run",
-        10,
-    )
-)
-
-
 BASE = "https://www.cinemark.com"
 
 
@@ -123,7 +112,7 @@ UA = (
 )
 
 
-AVAILABLE_SEAT = re_compile = (
+AVAILABLE_SEAT = (
     r'<button[^>]*class="seatAvailable seatBlock"[^>]*'
     r'info="([A-Z]+),(\d+),\d+,(\d+),'
 )
@@ -155,8 +144,8 @@ def fetch(
     """Fetch a page with one short retry.
 
     There is deliberately no long exponential/backoff loop.
-    If Cinemark blocks the request, we retry once after 30 seconds
-    and then abandon that particular seat-map request.
+    If Cinemark blocks the request, retry once after 30 seconds,
+    then abandon that particular seat-map request.
     """
 
     if gap is None:
@@ -251,7 +240,6 @@ def fetch(
     )
 
 
-
 def notify(
     title: str,
     message: str,
@@ -312,13 +300,19 @@ def load_state() -> dict:
         "dates": {},
         "seats": {},
         "theater_id": "276",
-        "scan_cursor": 0,
     }
 
 
 def save_state(
     state: dict,
 ) -> None:
+
+    # scan_cursor is no longer used.
+    # Remove it if an old state file still contains it.
+    state.pop(
+        "scan_cursor",
+        None,
+    )
 
     STATE_FILE.write_text(
         json.dumps(
@@ -538,45 +532,6 @@ def build_watch_list(
     return watch
 
 
-def select_shard(
-    watch: list[
-        tuple[str, str, str]
-    ],
-    cursor: int,
-) -> tuple[
-    list[tuple[str, str, str]],
-    int,
-]:
-    """Select a bounded rotating group of showtimes."""
-
-    if not watch:
-        return [], 0
-
-    cursor %= len(watch)
-
-    count = min(
-        MAX_SEATMAPS_PER_RUN,
-        len(watch),
-    )
-
-    selected = [
-        watch[
-            (cursor + offset)
-            % len(watch)
-        ]
-        for offset in range(count)
-    ]
-
-    next_cursor = (
-        cursor + count
-    ) % len(watch)
-
-    return (
-        selected,
-        next_cursor,
-    )
-
-
 def sweep(
     state: dict,
     only_dates: list[str] | None,
@@ -616,44 +571,20 @@ def sweep(
         return
 
     # ---------------------------------------------------------
-    # ROTATING SEAT-MAP SHARDS
+    # FULL SWEEP
     # ---------------------------------------------------------
     #
-    # Normal scheduled runs:
-    #   scan MAX_SEATMAPS_PER_RUN
-    #   advance scan_cursor
+    # Every qualifying Showtime ID in state.json is checked
+    # on every scheduled run.
     #
-    # Manual --dates runs:
-    #   scan the requested dates from the beginning
-    #   without modifying the persistent cursor.
+    # There is intentionally:
     #
-    if only_dates:
-
-        selected = watch[
-            :MAX_SEATMAPS_PER_RUN
-        ]
-
-        next_cursor = state.get(
-            "scan_cursor",
-            0,
-        )
-
-    else:
-
-        cursor = int(
-            state.get(
-                "scan_cursor",
-                0,
-            )
-        )
-
-        (
-            selected,
-            next_cursor,
-        ) = select_shard(
-            watch,
-            cursor,
-        )
+    #   - no discovery
+    #   - no rotating shard
+    #   - no scan cursor
+    #   - no MAX_SEATMAPS_PER_RUN
+    #
+    selected = watch
 
     log(
         f"seat scan: checking "
@@ -662,25 +593,11 @@ def sweep(
         f"showtimes at TheaterId=276"
     )
 
-    if (
-        len(watch)
-        > len(selected)
-    ):
-
-        log(
-            f"seat scan: rotating shard; "
-            f"next cursor {next_cursor}"
-        )
-
     total = 0
+    successful = 0
+    failed = 0
 
-    for i, (
-        date,
-        sid,
-        iso,
-    ) in enumerate(
-        selected
-    ):
+    for date, sid, iso in selected:
 
         try:
 
@@ -690,7 +607,11 @@ def sweep(
                 iso,
             )
 
+            successful += 1
+
         except Exception as e:
+
+            failed += 1
 
             log(
                 f"WARN: seat check "
@@ -741,20 +662,15 @@ def sweep(
                 ),
             )
 
-        # Save periodically so availability already collected
-        # during a run is not lost if the job is interrupted.
-        if i % 5 == 4:
-            save_state(state)
-
-    if not only_dates:
-
-        state[
-            "scan_cursor"
-        ] = next_cursor
+        # Save after every successful showtime.
+        # This prevents a long sweep from losing all
+        # collected availability if the runner is interrupted.
+        save_state(state)
 
     log(
         f"seat scan: "
-        f"{len(selected)} showtimes checked, "
+        f"{successful} showtimes checked, "
+        f"{failed} failed, "
         f"{total} qualifying seats"
     )
 
@@ -778,11 +694,6 @@ def report(
         f"excluded, "
         f"shows {EARLIEST}-{LATEST}, "
         f"party of {PARTY_SIZE}"
-    )
-
-    print(
-        f"scan cursor: "
-        f"{state.get('scan_cursor', 0)}"
     )
 
     tracked = {
