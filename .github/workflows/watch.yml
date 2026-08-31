@@ -2,8 +2,8 @@ name: watch
 
 on:
   schedule:
-    # Run every 25 minutes.
-    - cron: "3,28,53 * * * *"
+    # Run every 20 minutes.
+    - cron: "3,23,43 * * * *"
 
   workflow_dispatch:
     inputs:
@@ -29,10 +29,10 @@ jobs:
   sweep:
     runs-on: ubuntu-latest
 
-    # A normal run should finish well before this.
-    # This prevents a blocked request from consuming
-    # an excessively long Actions job.
-    timeout-minutes: 10
+    # A full sweep of all Showtime IDs can take
+    # several minutes because requests are deliberately
+    # paced to reduce Cinemark rate limiting.
+    timeout-minutes: 20
 
     env:
       GH_TOKEN: ${{ github.token }}
@@ -48,7 +48,7 @@ jobs:
           "Test alert"
           "The email channel works."
 
-      - name: Run scheduled sweep
+      - name: Run scheduled full sweep
         if: ${{ !inputs.test_alert && !inputs.dates }}
         run: python3 watch.py --once
 
@@ -67,6 +67,8 @@ jobs:
 
           if ! git diff --cached --quiet; then
             git commit -m "state: sweep $(date -u '+%Y-%m-%d %H:%M UTC')"
+
             git pull --rebase --autostash origin main || true
+
             git push
           fi
