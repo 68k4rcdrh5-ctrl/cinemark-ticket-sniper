@@ -1,0 +1,320 @@
+name: Extract Cinemark Showtimes
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch Cinemark schedule pages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p cinemark-debug
+
+          python3 <<'PY'
+          import gzip
+          import re
+          import urllib.request
+          from datetime import date, timedelta
+          from pathlib import Path
+
+          BASE = "https://www.cinemark.com"
+          SLUG = "il-woodridge/cinemark-seven-bridges-and-imax"
+
+          DATES = [
+              date(2026, 9, 12) + timedelta(days=i)
+              for i in range(5)
+          ]
+
+          UA = (
+              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+              "AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/126.0.0.0 Safari/537.36"
+          )
+
+          headers = {
+              "User-Agent": UA,
+              "Accept": (
+                  "text/html,"
+                  "application/xhtml+xml,"
+                  "application/xml;q=0.9,*/*;q=0.8"
+              ),
+              "Accept-Language": "en-US,en;q=0.9",
+              "Accept-Encoding": "gzip",
+          }
+
+          for d in DATES:
+              ds = d.isoformat()
+              url = (
+                  f"{BASE}/theatres/{SLUG}"
+                  f"?showDate={ds}"
+              )
+
+              print()
+              print("=" * 80)
+              print(f"DATE: {ds}")
+              print(f"URL:  {url}")
+              print("=" * 80)
+
+              req = urllib.request.Request(
+                  url,
+                  headers=headers,
+              )
+
+              try:
+                  with urllib.request.urlopen(
+                      req,
+                      timeout=45,
+                  ) as resp:
+
+                      body = resp.read()
+
+                      encoding = (
+                          resp.headers.get(
+                              "Content-Encoding",
+                              ""
+                          )
+                          .lower()
+                      )
+
+                      if encoding == "gzip":
+                          body = gzip.decompress(body)
+
+                      html = body.decode(
+                          "utf-8",
+                          errors="replace",
+                      )
+
+                      status = resp.status
+                      content_type = resp.headers.get(
+                          "Content-Type",
+                          ""
+                      )
+
+                      print(
+                          f"HTTP STATUS: {status}"
+                      )
+                      print(
+                          f"CONTENT TYPE: {content_type}"
+                      )
+                      print(
+                          f"HTML BYTES: {len(body)}"
+                      )
+
+              except Exception as exc:
+                  print(
+                      f"REQUEST FAILED: {exc!r}"
+                  )
+                  continue
+
+              out = (
+                  Path("cinemark-debug")
+                  / f"{ds}.html"
+              )
+
+              out.write_text(
+                  html,
+                  encoding="utf-8",
+              )
+
+              print(
+                  f"SAVED: {out}"
+              )
+
+              # -------------------------------------------------
+              # Basic diagnostic searches
+              # -------------------------------------------------
+
+              patterns = {
+                  "ShowtimeId": r"ShowtimeId",
+                  "Showtime": r"Showtime",
+                  "CinemarkMovieId": r"CinemarkMovieId",
+                  "Movie 104867": r"104867",
+                  "TicketSeatMap": r"TicketSeatMap",
+                  "606": r"606",
+                  "607": r"607",
+              }
+
+              print()
+              print("KEYWORD COUNTS:")
+
+              for name, pattern in patterns.items():
+                  count = len(
+                      re.findall(
+                          pattern,
+                          html,
+                          flags=re.I,
+                      )
+                  )
+
+                  print(
+                      f"  {name}: {count}"
+                  )
+
+              # -------------------------------------------------
+              # Extract anything that looks like a ShowtimeId
+              # -------------------------------------------------
+
+              id_patterns = [
+                  r"[?&]ShowtimeId=(\d+)",
+                  r'"ShowtimeId"\s*:\s*"?(\\d+)',
+                  r'"showtimeId"\s*:\s*"?(\\d+)',
+                  r'ShowtimeId\\?":\\?"?(\d+)',
+                  r'ShowtimeId[^\d]{0,20}(\d{5,7})',
+              ]
+
+              ids = set()
+
+              for pattern in id_patterns:
+                  for match in re.findall(
+                      pattern,
+                      html,
+                      flags=re.I,
+                  ):
+                      if isinstance(match, tuple):
+                          match = match[0]
+
+                      if re.fullmatch(
+                          r"\d{5,7}",
+                          match,
+                      ):
+                          ids.add(match)
+
+              print()
+              print(
+                  f"POSSIBLE SHOWTIME IDS: "
+                  f"{len(ids)}"
+              )
+
+              for sid in sorted(
+                  ids,
+                  key=int,
+              ):
+                  print(
+                      f"  ShowtimeId={sid}"
+                  )
+
+              # -------------------------------------------------
+              # Print snippets surrounding relevant identifiers
+              # -------------------------------------------------
+
+              terms = [
+                  "ShowtimeId",
+                  "showtimeId",
+                  "CinemarkMovieId",
+                  "TicketSeatMap",
+                  "104867",
+              ]
+
+              print()
+              print(
+                  "RELEVANT HTML SNIPPETS:"
+              )
+
+              snippets_found = 0
+
+              lower_html = html.lower()
+
+              for term in terms:
+                  needle = term.lower()
+                  start = 0
+
+                  while True:
+                      pos = lower_html.find(
+                          needle,
+                          start,
+                      )
+
+                      if pos == -1:
+                          break
+
+                      left = max(
+                          0,
+                          pos - 350,
+                      )
+
+                      right = min(
+                          len(html),
+                          pos + 700,
+                      )
+
+                      snippet = html[
+                          left:right
+                      ]
+
+                      # Keep logs manageable.
+                      snippet = (
+                          snippet
+                          .replace(
+                              "\n",
+                              " "
+                          )
+                          .replace(
+                              "\r",
+                              " "
+                          )
+                      )
+
+                      print()
+                      print(
+                          f"[{term}] "
+                          f"{snippet}"
+                      )
+
+                      snippets_found += 1
+
+                      # Five examples per term is enough
+                      # for diagnosis.
+                      if snippets_found >= 25:
+                          break
+
+                      start = pos + len(
+                          needle
+                      )
+
+                  if snippets_found >= 25:
+                      break
+
+              print()
+              print("-" * 80)
+
+          PY
+
+      - name: Search repository state for existing Showtime IDs
+        shell: bash
+        run: |
+          echo "Existing state.json Showtime IDs:"
+          python3 <<'PY'
+          import json
+
+          with open("state.json", "r", encoding="utf-8") as f:
+              state = json.load(f)
+
+          for d in sorted(state.get("dates", {})):
+              if d >= "2026-09-12":
+                  print(f"\n{d}")
+                  for sid, iso in sorted(
+                      state["dates"][d]["showtimes"].items(),
+                      key=lambda x: x[1],
+                  ):
+                      print(f"  {sid}  {iso}")
+          PY
+
+      - name: Upload raw Cinemark pages
+        uses: actions/upload-artifact@v4
+        with:
+          name: cinemark-showtime-debug
+          path: cinemark-debug/
+          if-no-files-found: warn
+          retention-days: 3
