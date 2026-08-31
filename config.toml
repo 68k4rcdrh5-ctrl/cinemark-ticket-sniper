@@ -6,10 +6,9 @@ timezone = "America/Chicago"
 
 [filters]
 excluded_rows = ["A", "B", "C", "D"]
-earliest_showtime = "09:00"
-latest_showtime = "23:59"
+earliest_showtime = "15:00"
+latest_showtime = "23:00"
 party_size = 2
 
 [pacing]
 request_gap_seconds = 8
-max_seatmaps_per_run = 10
