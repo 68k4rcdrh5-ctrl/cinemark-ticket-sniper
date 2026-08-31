@@ -327,12 +327,40 @@ def save_state(
 def qualifying(
     iso: str,
 ) -> bool:
+    """Return True only if the showtime is eligible to scan.
 
-    return (
+    Applies:
+      - configured daily time window
+      - current-time cutoff for today's showtimes
+
+    A showtime from an earlier time today is not scanned.
+    Future dates are eligible normally.
+    """
+
+    showtime_date = iso[:10]
+    showtime_time = iso[11:16]
+
+    if not (
         EARLIEST
-        <= iso[11:16]
+        <= showtime_time
         <= LATEST
-    )
+    ):
+        return False
+
+    today = datetime.now(TZ).date().isoformat()
+
+    if showtime_date < today:
+        return False
+
+    if showtime_date == today:
+        now_time = datetime.now(TZ).strftime(
+            "%H:%M"
+        )
+
+        if showtime_time < now_time:
+            return False
+
+    return True
 
 
 def available_seats(
@@ -424,9 +452,24 @@ def seat_blocks(
     return blocks
 
 
+def qualifying_blocks(
+    seats: list[Seat],
+) -> list[list[Seat]]:
+    """Return only seat blocks large enough for the party."""
+
+    return [
+        block
+        for block in seat_blocks(seats)
+        if len(block) >= PARTY_SIZE
+    ]
+
+
 def fmt_block(
     block: list[Seat],
 ) -> str:
+
+    if not block:
+        return ""
 
     if len(block) == 1:
         return block[0].label
@@ -435,6 +478,14 @@ def fmt_block(
         s.number
         for s in block
     )
+
+    if len(numbers) == 2:
+        return (
+            f"{block[0].row}"
+            f"{numbers[0]}-"
+            f"{block[0].row}"
+            f"{numbers[-1]}"
+        )
 
     return (
         f"{block[0].row}"
@@ -494,12 +545,6 @@ def build_watch_list(
     tuple[str, str, str]
 ]:
 
-    today = (
-        datetime.now(TZ)
-        .date()
-        .isoformat()
-    )
-
     watch = [
         (
             date,
@@ -510,8 +555,6 @@ def build_watch_list(
         in sorted(
             state["dates"].items()
         )
-
-        if date >= today
 
         for sid, iso
         in sorted(
@@ -593,7 +636,7 @@ def sweep(
         f"showtimes at TheaterId=276"
     )
 
-    total = 0
+    qualifying_block_count = 0
     successful = 0
     failed = 0
 
@@ -623,8 +666,6 @@ def sweep(
 
             continue
 
-        total += len(seats)
-
         current = sorted(
             {
                 s.label
@@ -636,14 +677,13 @@ def sweep(
             "seats"
         ][sid] = current
 
-        openings = [
-            block
-            for block in seat_blocks(
-                seats
-            )
-            if len(block)
-            >= PARTY_SIZE
-        ]
+        openings = qualifying_blocks(
+            seats
+        )
+
+        qualifying_block_count += len(
+            openings
+        )
 
         if openings:
 
@@ -656,8 +696,8 @@ def sweep(
                 (
                     f"{MOVIE_NAME}: "
                     + ", ".join(
-                        fmt_block(b)
-                        for b in openings
+                        fmt_block(block)
+                        for block in openings
                     )
                 ),
             )
@@ -671,7 +711,8 @@ def sweep(
         f"seat scan: "
         f"{successful} showtimes checked, "
         f"{failed} failed, "
-        f"{total} qualifying seats"
+        f"{qualifying_block_count} qualifying "
+        f"seat blocks"
     )
 
 
@@ -720,7 +761,7 @@ def report(
         f"({len(tracked)} dates)\n"
     )
 
-    empty = True
+    found = False
 
     for date, info in tracked.items():
 
@@ -738,22 +779,42 @@ def report(
                 [],
             )
 
-            if (
+            if not (
                 qualifying(iso)
                 and seats
             ):
+                continue
 
-                empty = False
-
-                print(
-                    f"  {date} "
-                    f"{fmt_time(iso):>8} "
-                    f"{len(seats):>3} seats: "
-                    f"{', '.join(seats[:14])}"
-                    f"{'...' if len(seats) > 14 else ''}"
+            seat_objects = [
+                Seat(
+                    row=label.rstrip(
+                        "0123456789"
+                    ),
+                    number=int(
+                        re.search(
+                            r"\d+$",
+                            label,
+                        ).group()
+                    ),
+                    col=0,
                 )
+                for label in seats
+            ]
 
-    if empty:
+            # The saved state only contains labels, so report
+            # the raw available seats here. Live sweep alerts
+            # are based on true physical adjacency.
+            found = True
+
+            print(
+                f"  {date} "
+                f"{fmt_time(iso):>8} "
+                f"{len(seats):>3} seats: "
+                f"{', '.join(seats[:14])}"
+                f"{'...' if len(seats) > 14 else ''}"
+            )
+
+    if not found:
 
         print(
             "no qualifying seats "
