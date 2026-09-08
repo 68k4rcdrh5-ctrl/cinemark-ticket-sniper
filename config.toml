@@ -8,7 +8,7 @@ timezone = "America/Chicago"
 excluded_rows = ["A", "B", "C", "D"]
 earliest_showtime = "15:00"
 latest_showtime = "23:00"
-party_size = 2
+party_size = 1
 
 [pacing]
 request_gap_seconds = 8
